@@ -1,0 +1,105 @@
+services:
+  vault-server:
+    image: hashicorp/vault:latest
+    restart: always
+    volumes:
+      - ./vault/config:/vault/config
+      - ./vault/data:/vault/data
+    ports:
+      - "8200:8200/tcp"
+    environment:
+      VAULT_DEV_ROOT_TOKEN_ID: 'root'
+      VAULT_DEV_LISTEN_ADDRESS: '0.0.0.0:8200'
+    cap_add:
+      - IPC_LOCK
+    container_name: vault-server
+    entrypoint: "vault server -dev"
+    networks:
+      - internal
+
+  vault-agent:
+    container_name: vault-agent
+    entrypoint: "vault agent -log-level debug -config=/vault-agent/nginx-vault-agent.hcl"
+    image: hashicorp/vault-enterprise:latest
+    restart: always
+    ports:
+      - "18200:8200"
+    volumes:
+      - ./vault-agent:/vault-agent:rw
+      - ./nginx:/usr/share/nginx/html:rw
+    environment:
+      VAULT_ADDR: "http://vault-server:8200"
+    networks:
+      - internal
+
+  db:
+    image: postgres:15
+    container_name: postgres_db
+    restart: always
+    environment:
+      POSTGRES_USER: youruser
+      POSTGRES_PASSWORD: yourpassword
+      POSTGRES_DB: yourdatabase
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    networks:
+      - internal
+
+  traefik:
+    image: traefik:v3.4
+    container_name: traefik
+    command:
+      - "--api.insecure=true"
+      - "--providers.file.filename=/etc/traefik/dynamic_conf.yml"
+      - "--entrypoints.web.address=:80"
+      - "--entrypoints.secure.address=:8443"
+    ports:
+      - "80:80"
+      - "8443:8443"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ./traefik/traefik.yml:/etc/traefik/traefik.yml
+      - ./traefik/dynamic_conf.yml:/etc/traefik/dynamic_conf.yml
+      - ./traefik/certs:/certs
+    networks:
+      - internal
+
+  backend:
+    build:
+      context: app/backend
+      dockerfile: ../../backend.Dockerfile
+    container_name: backend
+    restart: always
+    environment:
+      # Vault config
+      VAULT_ADDR: http://vault:8200
+      VAULT_ROLE_ID: your-role-id
+      VAULT_SECRET_ID: your-secret-id
+
+      # Fallback DB credentials (used if Vault fails)
+      DB_USER: myuser
+      DB_PASSWORD: mypassword
+      DB_NAME: mydb
+      DB_HOST: postgres
+      DB_PORT: 5432
+    volumes:
+      - ./backend/vault_credentials.env:/app/vault_credentials.env
+    networks:
+      - internal
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.backend.rule=Host(`backend.localhost`)"
+      - "traefik.http.routers.backend.entrypoints=secure"
+      - "traefik.http.services.backend.loadbalancer.server.port=3000"
+    depends_on:
+      - db
+      - vault-agent
+
+volumes:
+  postgres_data: 
+
+networks:
+  internal:
+    driver: bridge

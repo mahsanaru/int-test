@@ -1,0 +1,98 @@
+---
+- name: Vault Initialization
+  hosts: localhost
+  connection: local
+  vars:
+    vault_addr: "http://localhost:8200"
+    vault_token: "root"
+    postgres_creds:
+      username: "myuser"
+      password: "mypassword"
+
+  tasks:
+
+    - name: Enable KV v2 secrets engine
+      uri:
+        url: "{{ vault_addr }}/v1/sys/mounts/secret"
+        method: POST
+        headers:
+          "X-Vault-Token": "{{ vault_token }}"
+        body_format: json
+        body:
+          type: kv
+          options:
+            version: 2
+      ignore_errors: yes
+
+    - name: Seed PostgreSQL credentials
+      uri:
+        url: "{{ vault_addr }}/v1/secret/data/postgres"
+        method: POST
+        headers:
+          "X-Vault-Token": "{{ vault_token }}"
+        body_format: json
+        body:
+          data:
+            username: "{{ postgres_creds.username }}"
+            password: "{{ postgres_creds.password }}"
+
+    - name: Create policy for backend
+      uri:
+        url: "{{ vault_addr }}/v1/sys/policies/acl/backend-policy"
+        method: PUT
+        headers:
+          "X-Vault-Token": "{{ vault_token }}"
+        body_format: json
+        body:
+          policy: |
+            path "secret/data/postgres" {
+              capabilities = ["read"]
+            }
+
+    - name: Enable AppRole auth method
+      uri:
+        url: "{{ vault_addr }}/v1/sys/auth/approle"
+        method: POST
+        headers:
+          "X-Vault-Token": "{{ vault_token }}"
+        body_format: json
+        body:
+          type: approle
+      ignore_errors: yes
+
+    - name: Create AppRole for backend
+      uri:
+        url: "{{ vault_addr }}/v1/auth/approle/role/backend-role"
+        method: POST
+        headers:
+          "X-Vault-Token": "{{ vault_token }}"
+        body_format: json
+        body:
+          token_policies: "backend-policy"
+          token_ttl: 1h
+
+    - name: Fetch Role ID
+      uri:
+        url: "{{ vault_addr }}/v1/auth/approle/role/backend-role/role-id"
+        method: GET
+        headers:
+          "X-Vault-Token": "{{ vault_token }}"
+        return_content: yes
+      register: role_id
+
+    - name: Generate Secret ID
+      uri:
+        url: "{{ vault_addr }}/v1/auth/approle/role/backend-role/secret-id"
+        method: POST
+        headers:
+          "X-Vault-Token": "{{ vault_token }}"
+        return_content: yes
+      register: secret_id
+
+    - name: Save Role ID and Secret ID to file
+      copy:
+        dest: "./backend/vault_credentials.env"
+        content: |
+          VAULT_ROLE_ID={{ role_id.json.data.role_id }}
+          VAULT_SECRET_ID={{ secret_id.json.data.secret_id }}
+          
